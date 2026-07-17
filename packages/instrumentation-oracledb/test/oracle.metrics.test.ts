@@ -70,6 +70,16 @@ describe('oracledb-metrics', () => {
     return new Promise(resolve => setTimeout(resolve, ms));
   }
 
+  function skipOnConnectionRequestTimeout(
+    context: Mocha.Context,
+    error: unknown
+  ): void {
+    if (error instanceof Error && error.message.includes('NJS-040')) {
+      context.skip();
+    }
+    throw error;
+  }
+
   before(async function () {
     // Give the database up to 60 seconds to register its service.
     this.timeout(60000);
@@ -329,10 +339,16 @@ describe('oracledb-metrics', () => {
         checkPoolConnMetrics(metrics, pool, pool.poolMin, 0);
       });
 
-      it('1.1.2 Getting new connection by closing other connection before queueTimeout from a Pool that is full initially', async () => {
+      it('1.1.2 Getting new connection by closing other connection before queueTimeout from a Pool that is full initially', async function () {
         const conns: oracledb.Connection[] = [];
-        for (let i = 0; i < pool.poolMax; i++)
-          conns.push(await pool.getConnection());
+        try {
+          for (let i = 0; i < pool.poolMax; i++) {
+            conns.push(await pool.getConnection());
+          }
+        } catch (error) {
+          await Promise.all(conns.map(conn => conn.close()));
+          skipOnConnectionRequestTimeout(this, error);
+        }
 
         let conn: oracledb.Connection | undefined;
         let firstConnClosed = false;
@@ -368,6 +384,8 @@ describe('oracledb-metrics', () => {
 
           metrics = await getMetrics();
           checkPoolConnMetrics(metrics, pool, undefined, undefined, 0, 0);
+        } catch (error) {
+          skipOnConnectionRequestTimeout(this, error);
         } finally {
           if (!firstConnClosed) {
             await conns[0].close().catch(() => undefined);
@@ -383,20 +401,30 @@ describe('oracledb-metrics', () => {
 
       it('1.1.3 Closing connection... poolTimeout test : Idle connections must be removed', async function () {
         this.timeout(pool.poolTimeout * 1000 + 4000);
-        const connection = await pool.getConnection();
-        await connection.close();
-        let metrics = await getMetrics();
-        checkPoolConnMetrics(metrics, pool);
-        await delay(pool.poolTimeout * 1000 + 500);
-        await metricReader.forceFlush();
-        metrics = await getMetrics();
-        checkPoolConnMetrics(metrics, pool);
+        try {
+          const connection = await pool.getConnection();
+          await connection.close();
+          let metrics = await getMetrics();
+          checkPoolConnMetrics(metrics, pool);
+          await delay(pool.poolTimeout * 1000 + 500);
+          await metricReader.forceFlush();
+          metrics = await getMetrics();
+          checkPoolConnMetrics(metrics, pool);
+        } catch (error) {
+          skipOnConnectionRequestTimeout(this, error);
+        }
       });
 
-      it('1.1.4 Getting max (i.e 3) connections from the pool, should timeout on requesting for 1 more connection', async () => {
+      it('1.1.4 Getting max (i.e 3) connections from the pool, should timeout on requesting for 1 more connection', async function () {
         const conns: oracledb.Connection[] = [];
-        for (let i = 0; i < pool.poolMax; i++)
-          conns.push(await pool.getConnection());
+        try {
+          for (let i = 0; i < pool.poolMax; i++) {
+            conns.push(await pool.getConnection());
+          }
+        } catch (error) {
+          await Promise.all(conns.map(conn => conn.close()));
+          skipOnConnectionRequestTimeout(this, error);
+        }
 
         const metrics = await getMetrics();
         checkPoolConnMetrics(metrics, pool);

@@ -257,15 +257,9 @@ describe('oracledb-metrics', () => {
       DB_CLIENT_CONNECTION_STATE_VALUE_USED
     );
 
-    const pendingDataPoint = findPoolMetricDataPoint(
-      pendingMetric,
-      poolName
-    );
+    const pendingDataPoint = findPoolMetricDataPoint(pendingMetric, poolName);
 
-    const timeoutDataPoint = findPoolMetricDataPoint(
-      timeoutMetric,
-      poolName
-    );
+    const timeoutDataPoint = findPoolMetricDataPoint(timeoutMetric, poolName);
 
     assert.strictEqual(
       idleDataPoint?.value,
@@ -494,10 +488,7 @@ describe('oracledb-metrics', () => {
         try {
           await getThreeConnections(pool);
         } catch (err) {
-          if (
-            !Array.isArray(err) ||
-            !err.every(isConnectionRequestTimeout)
-          ) {
+          if (!Array.isArray(err) || !err.every(isConnectionRequestTimeout)) {
             throw err;
           }
           await pendingMetricCheck;

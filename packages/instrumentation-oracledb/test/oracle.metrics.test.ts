@@ -70,11 +70,16 @@ describe('oracledb-metrics', () => {
     return new Promise(resolve => setTimeout(resolve, ms));
   }
 
+  function isConnectionRequestTimeout(error: unknown): boolean {
+    if (error instanceof Error) return error.message.includes('NJS-040');
+    return Array.isArray(error) && error.some(isConnectionRequestTimeout);
+  }
+
   function skipOnConnectionRequestTimeout(
     context: Mocha.Context,
     error: unknown
   ): void {
-    if (error instanceof Error && error.message.includes('NJS-040')) {
+    if (isConnectionRequestTimeout(error)) {
       context.skip();
     }
     throw error;
@@ -458,7 +463,7 @@ describe('oracledb-metrics', () => {
         }
       });
 
-      it('1.1.5 If 3 conn are requested at full pool at same time, metrics pending request should increase to 3 & back to 0', async () => {
+      it('1.1.5 If 3 conn are requested at full pool at same time, metrics pending request should increase to 3 & back to 0', async function () {
         if (pool) await pool.close(0);
         pool = await oracledb.createPool({
           ...utils.CONFIG,
@@ -470,8 +475,14 @@ describe('oracledb-metrics', () => {
           poolTimeout: 5,
         });
         const conns: oracledb.Connection[] = [];
-        for (let i = 0; i < pool.poolMax; i++)
-          conns.push(await pool.getConnection());
+        try {
+          for (let i = 0; i < pool.poolMax; i++) {
+            conns.push(await pool.getConnection());
+          }
+        } catch (error) {
+          await Promise.all(conns.map(conn => conn.close()));
+          skipOnConnectionRequestTimeout(this, error);
+        }
         const pendingMetricCheck = new Promise<void>((resolve, reject) => {
           setImmediate(() => {
             void (async () => {
@@ -483,8 +494,14 @@ describe('oracledb-metrics', () => {
         try {
           await getThreeConnections(pool);
         } catch (err) {
+          if (
+            !Array.isArray(err) ||
+            !err.every(isConnectionRequestTimeout)
+          ) {
+            throw err;
+          }
           await pendingMetricCheck;
-          assert.ok((err as any).length >= 1 && (err as any).length <= 3);
+          assert.ok(err.length >= 1 && err.length <= 3);
           const metrics = await getMetrics();
           checkPoolConnMetrics(metrics, pool, undefined, undefined, 0, 3);
         } finally {
@@ -864,26 +881,31 @@ describe('oracledb-metrics', () => {
       }
     });
 
-    it('3.3 Pools created before enabling instrumentation should also be instrumented', async () => {
+    it('3.3 Pools created before enabling instrumentation should also be instrumented', async function () {
       instrumentation.disable();
       const poolName = 'demopool';
-      const pool = await oracledb.createPool({
-        ...utils.POOL_CONFIG,
-        poolMin: 1,
-        poolMax: 3,
-        queueTimeout,
-        poolAlias: poolName,
-        enableStatistics: true,
-        poolTimeout: 5,
-      });
-      instrumentation.enable();
-      const conn = await pool.getConnection();
+      let pool: oracledb.Pool | undefined;
+      let conn: oracledb.Connection | undefined;
       try {
+        pool = await oracledb.createPool({
+          ...utils.POOL_CONFIG,
+          poolMin: 1,
+          poolMax: 3,
+          queueTimeout,
+          poolAlias: poolName,
+          enableStatistics: true,
+          poolTimeout: 5,
+        });
+        instrumentation.enable();
+        conn = await pool.getConnection();
         const metrics = await getMetrics();
         checkPoolConnMetrics(metrics, pool, 0, 1, 0, 0);
+      } catch (error) {
+        skipOnConnectionRequestTimeout(this, error);
       } finally {
-        if (conn) await conn.close();
-        if (pool) await pool.close(0);
+        if (conn) await conn.close().catch(() => undefined);
+        if (pool) await pool.close(0).catch(() => undefined);
+        instrumentation.enable();
       }
     });
   });

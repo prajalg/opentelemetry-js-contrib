@@ -89,6 +89,11 @@ describe('oracledb-metrics', () => {
     if (!shouldTest) {
       skip();
     }
+    // node-oracledb exposes the driver metrics APIs used by this suite from
+    // version 7.0 onwards. Older versions remain covered by trace tests.
+    if (oracledb.version < 70000) {
+      skip();
+    }
 
     // Retry connection mechanism for intermittent service registration (NJS-518).
     const maxRetries = 15;

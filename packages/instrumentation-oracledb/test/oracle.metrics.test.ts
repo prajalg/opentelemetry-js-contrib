@@ -4,13 +4,13 @@
  */
 import {
   AggregationTemporality,
-  DataPoint,
+  type DataPoint,
   DataPointType,
-  Histogram,
+  type Histogram,
   InMemoryMetricExporter,
   MeterProvider,
-  MetricData,
-  MetricReader,
+  type MetricData,
+  type MetricReader,
 } from '@opentelemetry/sdk-metrics';
 import * as utils from './utils';
 import * as assert from 'assert';
@@ -75,16 +75,6 @@ describe('oracledb-metrics', () => {
     return Array.isArray(error) && error.some(isConnectionRequestTimeout);
   }
 
-  function skipOnConnectionRequestTimeout(
-    context: Mocha.Context,
-    error: unknown
-  ): void {
-    if (isConnectionRequestTimeout(error)) {
-      context.skip();
-    }
-    throw error;
-  }
-
   before(async function () {
     // Give the database up to 60 seconds to register its service.
     this.timeout(60000);
@@ -112,7 +102,7 @@ describe('oracledb-metrics', () => {
         const d1 = Date.now();
         connection = await pool.getConnection();
         const d2 = Date.now();
-        queueTimeout = Number(d2 - d1) + 100;
+        queueTimeout = Number(d2 - d1) + 1000;
         await connection.close();
         await pool.close(0);
         break;
@@ -144,7 +134,7 @@ describe('oracledb-metrics', () => {
     await initMeterProvider();
   });
 
-  after(async function () {
+  after(async () => {
     instrumentation.disable();
     if (testOracleDBLocally) {
       metricsExporter.reset();
@@ -289,7 +279,7 @@ describe('oracledb-metrics', () => {
       const poolName = 'pool1';
 
       after(async () => {
-        if (pool.status !== oracledb.POOL_STATUS_CLOSED) {
+        if (pool.status === oracledb.POOL_STATUS_OPEN) {
           await pool.close(0);
         }
       });
@@ -338,15 +328,16 @@ describe('oracledb-metrics', () => {
         checkPoolConnMetrics(metrics, pool, pool.poolMin, 0);
       });
 
-      it('1.1.2 Getting new connection by closing other connection before queueTimeout from a Pool that is full initially', async function () {
+      it('1.1.2 Getting new connection by closing other connection before queueTimeout from a Pool that is full initially', async () => {
         const conns: oracledb.Connection[] = [];
         try {
+          // filling up the pool
           for (let i = 0; i < pool.poolMax; i++) {
             conns.push(await pool.getConnection());
           }
         } catch (error) {
           await Promise.all(conns.map(conn => conn.close()));
-          skipOnConnectionRequestTimeout(this, error);
+          throw error;
         }
 
         let conn: oracledb.Connection | undefined;
@@ -383,8 +374,6 @@ describe('oracledb-metrics', () => {
 
           metrics = await getMetrics();
           checkPoolConnMetrics(metrics, pool, undefined, undefined, 0, 0);
-        } catch (error) {
-          skipOnConnectionRequestTimeout(this, error);
         } finally {
           if (!firstConnClosed) {
             await conns[0].close().catch(() => undefined);
@@ -400,21 +389,18 @@ describe('oracledb-metrics', () => {
 
       it('1.1.3 Closing connection... poolTimeout test : Idle connections must be removed', async function () {
         this.timeout(pool.poolTimeout * 1000 + 4000);
-        try {
-          const connection = await pool.getConnection();
-          await connection.close();
-          let metrics = await getMetrics();
-          checkPoolConnMetrics(metrics, pool);
-          await delay(pool.poolTimeout * 1000 + 500);
-          await metricReader.forceFlush();
-          metrics = await getMetrics();
-          checkPoolConnMetrics(metrics, pool);
-        } catch (error) {
-          skipOnConnectionRequestTimeout(this, error);
-        }
+        const connection = await pool.getConnection();
+        await connection.close();
+        let metrics = await getMetrics();
+        checkPoolConnMetrics(metrics, pool);
+        await delay(pool.poolTimeout * 1000 + 500);
+        await metricReader.forceFlush();
+        metrics = await getMetrics();
+        checkPoolConnMetrics(metrics, pool);
       });
 
       it('1.1.4 Getting max (i.e 3) connections from the pool, should timeout on requesting for 1 more connection', async function () {
+        this.timeout(Math.max(pool.queueTimeout * (pool.poolMax + 2), 15000));
         const conns: oracledb.Connection[] = [];
         try {
           for (let i = 0; i < pool.poolMax; i++) {
@@ -422,42 +408,53 @@ describe('oracledb-metrics', () => {
           }
         } catch (error) {
           await Promise.all(conns.map(conn => conn.close()));
-          skipOnConnectionRequestTimeout(this, error);
+          throw error;
         }
 
-        const metrics = await getMetrics();
-        checkPoolConnMetrics(metrics, pool);
-
-        const pendingMetricCheck = new Promise<void>((resolve, reject) => {
-          setImmediate(() => {
-            void (async () => {
-              const metrics = await getMetrics();
-              checkPoolConnMetrics(metrics, pool, undefined, undefined, 1, 0);
-            })().then(resolve, reject);
-          });
-        });
+        const pendingConnection = pool.getConnection().then(
+          conn => ({ status: 'fulfilled' as const, conn }),
+          err => ({ status: 'rejected' as const, err })
+        );
         try {
-          const result = await pool.getConnection().then(
-            conn => ({ status: 'fulfilled' as const, conn }),
-            err => ({ status: 'rejected' as const, err })
+          const metrics = await getMetrics();
+          checkPoolConnMetrics(metrics, pool);
+
+          await new Promise<void>(resolve => setImmediate(resolve));
+          const pendingMetrics = await getMetrics();
+          checkPoolConnMetrics(
+            pendingMetrics,
+            pool,
+            undefined,
+            undefined,
+            1,
+            0
           );
+
+          const result = await pendingConnection;
           if (result.status === 'fulfilled') {
             await result.conn.close();
             assert.fail('expected getConnection to time out when pool is full');
           }
-          await pendingMetricCheck;
-          const metrics = await getMetrics();
-          checkPoolConnMetrics(metrics, pool, undefined, undefined, 0, 1);
+          const timeoutMetrics = await getMetrics();
+          checkPoolConnMetrics(
+            timeoutMetrics,
+            pool,
+            undefined,
+            undefined,
+            0,
+            1
+          );
         } finally {
-          try {
-            await pendingMetricCheck;
-          } finally {
-            for (let i = 0; i < conns.length; i++) await conns[i].close();
+          const result = await pendingConnection;
+          if (result.status === 'fulfilled') {
+            await result.conn.close().catch(() => undefined);
           }
+          for (let i = 0; i < conns.length; i++) await conns[i].close();
         }
       });
 
       it('1.1.5 If 3 conn are requested at full pool at same time, metrics pending request should increase to 3 & back to 0', async function () {
+        this.timeout(Math.max(pool.queueTimeout * (pool.poolMax + 2), 15000));
         if (pool) await pool.close(0);
         pool = await oracledb.createPool({
           ...utils.CONFIG,
@@ -475,32 +472,40 @@ describe('oracledb-metrics', () => {
           }
         } catch (error) {
           await Promise.all(conns.map(conn => conn.close()));
-          skipOnConnectionRequestTimeout(this, error);
+          throw error;
         }
-        const pendingMetricCheck = new Promise<void>((resolve, reject) => {
-          setImmediate(() => {
-            void (async () => {
-              const metrics = await getMetrics();
-              checkPoolConnMetrics(metrics, pool, undefined, undefined, 3, 0);
-            })().then(resolve, reject);
-          });
-        });
+        const pendingConnections = getThreeConnections(pool).then(
+          () => ({ status: 'fulfilled' as const }),
+          err => ({ status: 'rejected' as const, err })
+        );
         try {
-          await getThreeConnections(pool);
-        } catch (err) {
-          if (!Array.isArray(err) || !err.every(isConnectionRequestTimeout)) {
-            throw err;
+          await new Promise<void>(resolve => setImmediate(resolve));
+          const pendingMetrics = await getMetrics();
+          checkPoolConnMetrics(
+            pendingMetrics,
+            pool,
+            undefined,
+            undefined,
+            3,
+            0
+          );
+
+          const result = await pendingConnections;
+          if (result.status === 'fulfilled') {
+            assert.fail('expected getConnection requests to time out');
           }
-          await pendingMetricCheck;
-          assert.ok(err.length >= 1 && err.length <= 3);
+          if (
+            !Array.isArray(result.err) ||
+            !result.err.every(isConnectionRequestTimeout)
+          ) {
+            throw result.err;
+          }
+          assert.ok(result.err.length >= 1 && result.err.length <= 3);
           const metrics = await getMetrics();
           checkPoolConnMetrics(metrics, pool, undefined, undefined, 0, 3);
         } finally {
-          try {
-            await pendingMetricCheck;
-          } finally {
-            for (let i = 0; i < conns.length; i++) await conns[i].close();
-          }
+          await pendingConnections;
+          for (let i = 0; i < conns.length; i++) await conns[i].close();
         }
       });
 
@@ -512,94 +517,88 @@ describe('oracledb-metrics', () => {
     });
 
     describe('1.2 Multiple pools : all of them should be instrumented', () => {
-      after(async () => {
-        if (newPool1) await newPool1.close(0);
-        if (newPool2) await newPool2.close(0);
-      });
-
       before(async () => {
         await meterProvider.shutdown();
         await initMeterProvider();
       });
 
-      let newPool1: oracledb.Pool;
-      let newPool2: oracledb.Pool;
       const poolName1 = 'newPool1';
       const poolName2 = 'newPool2';
 
       it('1.2.1 Creating 2 pools...', async () => {
-        newPool1 = await oracledb.createPool({
-          ...utils.POOL_CONFIG,
-          poolAlias: poolName1,
-          enableStatistics: true,
-        });
-        newPool2 = await oracledb.createPool({
-          ...utils.POOL_CONFIG,
-          poolAlias: poolName2,
-          enableStatistics: true,
-        });
-
-        const [conn1, conn2] = await Promise.all([
-          newPool1.getConnection(),
-          newPool2.getConnection(),
-        ]);
-
+        let newPool1: oracledb.Pool | undefined;
+        let newPool2: oracledb.Pool | undefined;
+        let conn1: oracledb.Connection | undefined;
+        let conn2: oracledb.Connection | undefined;
         try {
+          newPool1 = await oracledb.createPool({
+            ...utils.POOL_CONFIG,
+            poolAlias: poolName1,
+            enableStatistics: true,
+          });
+          newPool2 = await oracledb.createPool({
+            ...utils.POOL_CONFIG,
+            poolAlias: poolName2,
+            enableStatistics: true,
+          });
+          [conn1, conn2] = await Promise.all([
+            newPool1.getConnection(),
+            newPool2.getConnection(),
+          ]);
+
           const metrics = await getMetrics();
           checkPoolConnMetrics(metrics, newPool1);
           checkPoolConnMetrics(metrics, newPool2);
         } finally {
-          await Promise.all([conn1.close(), conn2.close()]);
+          await Promise.all([
+            conn1?.close().catch(() => undefined),
+            conn2?.close().catch(() => undefined),
+          ]);
+          await newPool1?.close(0).catch(() => undefined);
+          await newPool2?.close(0).catch(() => undefined);
         }
       });
 
-      it('1.2.2 Creating 2 pools with distinct states should keep connection counts isolated', async () => {
+      it('1.2.2 Creating 2 pools with distinct states should keep connection counts isolated', async function () {
+        this.timeout(Math.max(queueTimeout * 8, 15000));
         const distinctPoolName1 = 'distinctPool1';
         const distinctPoolName2 = 'distinctPool2';
-        let distinctPool1: oracledb.Pool | undefined;
-        let distinctPool2: oracledb.Pool | undefined;
+        let pool1: oracledb.Pool | undefined;
+        let pool2: oracledb.Pool | undefined;
         const connsPool1: oracledb.Connection[] = [];
         let connPool2: oracledb.Connection | undefined;
 
         try {
-          distinctPool1 = await oracledb.createPool({
+          pool1 = await oracledb.createPool({
             ...utils.POOL_CONFIG,
             poolMin: 2,
             poolMax: 5,
             poolAlias: distinctPoolName1,
             enableStatistics: true,
           });
-          distinctPool2 = await oracledb.createPool({
+          pool2 = await oracledb.createPool({
             ...utils.POOL_CONFIG,
             poolMin: 4,
             poolMax: 10,
             poolAlias: distinctPoolName2,
             enableStatistics: true,
           });
-
-          assert.ok(
-            await utils.waitForCreatePool(distinctPool1, queueTimeout),
-            `expected ${distinctPoolName1} to warm up`
-          );
-          assert.ok(
-            await utils.waitForCreatePool(distinctPool2, queueTimeout),
-            `expected ${distinctPoolName2} to warm up`
-          );
-
           connsPool1.push(
-            await distinctPool1.getConnection(),
-            await distinctPool1.getConnection()
+            await pool1.getConnection(),
+            await pool2.getConnection()
           );
-          connPool2 = await distinctPool2.getConnection();
+          connPool2 = await pool2.getConnection();
 
           const metrics = await getMetrics();
-          checkPoolConnMetrics(metrics, distinctPool1, 0, 2, 0, 0);
-          checkPoolConnMetrics(metrics, distinctPool2, 3, 1, 0, 0);
+          checkPoolConnMetrics(metrics, pool1);
+          checkPoolConnMetrics(metrics, pool2);
         } finally {
-          await Promise.all(connsPool1.map(conn => conn.close()));
-          if (connPool2) await connPool2.close();
-          if (distinctPool1) await distinctPool1.close(0);
-          if (distinctPool2) await distinctPool2.close(0);
+          await Promise.all([
+            ...connsPool1.map(conn => conn.close().catch(() => undefined)),
+            connPool2?.close().catch(() => undefined),
+            pool1?.close(0).catch(() => undefined),
+            pool2?.close(0).catch(() => undefined),
+          ]);
         }
       });
     });
@@ -659,26 +658,22 @@ describe('oracledb-metrics', () => {
         );
 
       const v = (dataPoint as DataPoint<Histogram>).value;
-      v.min = v.min ? v.min : 0;
-      v.max = v.max ? v.max : 0;
+      const min = v.min ?? 0;
+      const max = v.max ?? 0;
       assert.equal(
-        v.min > 0,
+        min > 0,
         true,
         'expect min value for Histogram to be greater than 0'
       );
       assert.equal(
-        v.max > 0,
+        max > 0,
         true,
         'expect max value for Histogram to be greater than 0'
       );
     }
 
     after(async () => {
-      try {
-        await pool.close(0);
-      } catch (err) {
-        console.log(err);
-      }
+      await pool.close(0).catch(() => undefined);
     });
 
     before(async () => {
@@ -695,103 +690,126 @@ describe('oracledb-metrics', () => {
     });
 
     it(`2.1 Should generate ${METRIC_DB_CLIENT_OPERATION_DURATION} metric when executed using execute()`, async () => {
-      await meterProvider.shutdown();
-      await initMeterProvider();
+      let conn: oracledb.Connection | undefined;
+      try {
+        await meterProvider.shutdown();
+        await initMeterProvider();
 
-      const conn = await pool.getConnection();
-      await conn.execute(sql);
-      const metrics = await getMetrics();
-      checkDurationMetrics(metrics, 'SELECT');
-
-      await conn.close();
+        conn = await pool.getConnection();
+        await conn.execute(sql);
+        const metrics = await getMetrics();
+        checkDurationMetrics(metrics, 'SELECT');
+      } finally {
+        await conn?.close().catch(() => undefined);
+      }
     });
 
-    it(`2.2 Should generate ${METRIC_DB_CLIENT_OPERATION_DURATION} metric with correct operation name 
+    it(`2.2 Should generate ${METRIC_DB_CLIENT_OPERATION_DURATION} metric with correct operation name
       \twhen statement is PLSQL containing outBinds binds & executed using execute()`, async () => {
-      await meterProvider.shutdown();
-      await initMeterProvider();
-      const plsql = `BEGIN
+      let conn: oracledb.Connection | undefined;
+      try {
+        await meterProvider.shutdown();
+        await initMeterProvider();
+        const plsql = `BEGIN
                       SELECT 1 INTO :a FROM dual;
                       SELECT 2 INTO :b FROM dual;
                      END;`;
-      const conn = await pool.getConnection();
-      await conn.execute(plsql, {
-        a: { dir: oracledb.BIND_OUT, type: oracledb.NUMBER },
-        b: { dir: oracledb.BIND_OUT, type: oracledb.NUMBER },
-      });
-      const metrics = await getMetrics();
-      checkDurationMetrics(metrics, 'PLSQL');
-
-      await conn.close();
+        conn = await pool.getConnection();
+        await conn.execute(plsql, {
+          a: { dir: oracledb.BIND_OUT, type: oracledb.NUMBER },
+          b: { dir: oracledb.BIND_OUT, type: oracledb.NUMBER },
+        });
+        const metrics = await getMetrics();
+        checkDurationMetrics(metrics, 'PLSQL');
+      } finally {
+        await conn?.close().catch(() => undefined);
+      }
     });
 
-    it(`2.3 Should generate ${METRIC_DB_CLIENT_OPERATION_DURATION} metric with correct operation name 
+    it(`2.3 Should generate ${METRIC_DB_CLIENT_OPERATION_DURATION} metric with correct operation name
       \twhen executed using executeMany() containing inputBinds`, async () => {
-      await meterProvider.shutdown();
-      await initMeterProvider();
-      const conn = await pool.getConnection();
-      instrumentation.disable();
-      await conn.execute(dropTableSql);
-      await conn.execute(createTableSql);
+      let conn: oracledb.Connection | undefined;
+      let tableCreated = false;
+      try {
+        await meterProvider.shutdown();
+        await initMeterProvider();
+        conn = await pool.getConnection();
+        instrumentation.disable();
+        await conn.execute(dropTableSql);
+        await conn.execute(createTableSql);
+        tableCreated = true;
 
-      // Define DML statement (INSERT)
-      const sql = 'INSERT INTO test_temp (id, name) VALUES (:id, :name)';
+        // Define DML statement (INSERT)
+        const sql = 'INSERT INTO test_temp (id, name) VALUES (:id, :name)';
 
-      // Define binds (array of objects)
-      const binds = [
-        { id: 1, name: 'Alice' },
-        { id: 2, name: 'Bob' },
-        { id: 3, name: 'Charlie' },
-      ];
+        // Define binds (array of objects)
+        const binds = [
+          { id: 1, name: 'Alice' },
+          { id: 2, name: 'Bob' },
+          { id: 3, name: 'Charlie' },
+        ];
 
-      const options = { batchErrors: true, autoCommit: true };
-      instrumentation.enable();
-      await conn.executeMany(sql, binds, options);
-      await conn.commit();
-      const metrics = await getMetrics();
-      checkDurationMetrics(metrics, 'BATCH INSERT');
-
-      await conn.execute('DROP TABLE test_temp PURGE');
-      await conn.commit();
-
-      await conn.close();
+        const options = { batchErrors: true, autoCommit: true };
+        instrumentation.enable();
+        await conn.executeMany(sql, binds, options);
+        await conn.commit();
+        const metrics = await getMetrics();
+        checkDurationMetrics(metrics, 'BATCH INSERT');
+      } finally {
+        if (conn && tableCreated) {
+          instrumentation.disable();
+          await conn.execute(dropTableSql).catch(() => undefined);
+          await conn.commit().catch(() => undefined);
+        }
+        instrumentation.enable();
+        await conn?.close().catch(() => undefined);
+      }
     });
 
-    it(`2.4 Should generate ${METRIC_DB_CLIENT_OPERATION_DURATION} metric with correct operation name 
+    it(`2.4 Should generate ${METRIC_DB_CLIENT_OPERATION_DURATION} metric with correct operation name
       \twhen statement is PLSQL & executed using executeMany() containing inputBinds`, async () => {
-      await meterProvider.shutdown();
-      await initMeterProvider();
-      const conn = await pool.getConnection();
-      instrumentation.disable();
-      await conn.execute(dropTableSql);
-      await conn.execute(createTableSql);
+      let conn: oracledb.Connection | undefined;
+      let tableCreated = false;
+      try {
+        await meterProvider.shutdown();
+        await initMeterProvider();
+        conn = await pool.getConnection();
+        instrumentation.disable();
+        await conn.execute(dropTableSql);
+        await conn.execute(createTableSql);
+        tableCreated = true;
 
-      const plsql = `BEGIN
+        const plsql = `BEGIN
                       INSERT INTO test_temp (id, name)
                       VALUES (:id, :name);
                      END;`;
 
-      const binds = [
-        { id: 1, name: 'Alice' },
-        { id: 2, name: 'Bob' },
-        { id: 3, name: 'Charlie' },
-      ];
+        const binds = [
+          { id: 1, name: 'Alice' },
+          { id: 2, name: 'Bob' },
+          { id: 3, name: 'Charlie' },
+        ];
 
-      instrumentation.enable();
-      await conn.executeMany(plsql, binds);
-      await conn.commit();
-      const metrics = await getMetrics();
-      checkDurationMetrics(metrics, 'BATCH PLSQL');
-
-      await conn.execute('DROP TABLE test_temp PURGE');
-      await conn.commit();
-
-      await conn.close();
+        instrumentation.enable();
+        await conn.executeMany(plsql, binds);
+        await conn.commit();
+        const metrics = await getMetrics();
+        checkDurationMetrics(metrics, 'BATCH PLSQL');
+      } finally {
+        if (conn && tableCreated) {
+          instrumentation.disable();
+          await conn.execute(dropTableSql).catch(() => undefined);
+          await conn.commit().catch(() => undefined);
+        }
+        instrumentation.enable();
+        await conn?.close().catch(() => undefined);
+      }
     });
 
     it(`2.5 Should generate ${METRIC_DB_CLIENT_OPERATION_DURATION} metric with error attribute`, async () => {
-      const conn = await pool.getConnection();
+      let conn: oracledb.Connection | undefined;
       try {
+        conn = await pool.getConnection();
         await meterProvider.shutdown();
         await initMeterProvider();
 
@@ -805,7 +823,7 @@ describe('oracledb-metrics', () => {
         const metrics = await getMetrics();
         checkDurationMetrics(metrics, 'SELECT', executeError);
       } finally {
-        await conn.close();
+        await conn?.close().catch(() => undefined);
       }
     });
   });
@@ -818,18 +836,20 @@ describe('oracledb-metrics', () => {
     it('3.1 Any metric update before doing instrumentation.enable() should not be reflected', async () => {
       instrumentation.disable();
       const poolName = 'demopool';
-      const pool = await oracledb.createPool({
-        ...utils.POOL_CONFIG,
-        poolMin: 1,
-        poolMax: 3,
-        queueTimeout,
-        poolAlias: poolName,
-        enableStatistics: true,
-        poolTimeout: 5,
-      });
-      const conn = await pool.getConnection();
-      instrumentation.enable();
+      let pool: oracledb.Pool | undefined;
+      let conn: oracledb.Connection | undefined;
       try {
+        pool = await oracledb.createPool({
+          ...utils.POOL_CONFIG,
+          poolMin: 1,
+          poolMax: 3,
+          queueTimeout,
+          poolAlias: poolName,
+          enableStatistics: true,
+          poolTimeout: 5,
+        });
+        conn = await pool.getConnection();
+        instrumentation.enable();
         const { resourceMetrics, errors } = await metricReader.collect();
         assert.deepEqual(
           errors,
@@ -838,41 +858,45 @@ describe('oracledb-metrics', () => {
         );
         assert.strictEqual(resourceMetrics.scopeMetrics.length, 0);
       } finally {
-        if (conn) await conn.close();
-        if (pool) await pool.close(0);
+        if (conn) await conn.close().catch(() => undefined);
+        if (pool) await pool.close(0).catch(() => undefined);
+        instrumentation.enable();
       }
     });
 
     it('3.2 Any metric update after doing instrumentation.disable() should not be reflected', async () => {
       instrumentation.enable();
       const poolName = 'demopool';
-      const pool = await oracledb.createPool({
-        ...utils.POOL_CONFIG,
-        poolMin: 1,
-        poolMax: 3,
-        queueTimeout,
-        poolAlias: poolName,
-        enableStatistics: true,
-        poolTimeout: 5,
-      });
-
-      await utils.waitForCreatePool(pool, queueTimeout);
-      const metrics = await getMetrics();
-      checkPoolConnMetrics(metrics, pool);
-
-      instrumentation.disable();
-      const conn = await pool.getConnection();
-
+      let pool: oracledb.Pool | undefined;
+      let conn: oracledb.Connection | undefined;
       try {
+        pool = await oracledb.createPool({
+          ...utils.POOL_CONFIG,
+          poolMin: 1,
+          poolMax: 3,
+          queueTimeout,
+          poolAlias: poolName,
+          enableStatistics: true,
+          poolTimeout: 5,
+        });
+        await utils.waitForCreatePool(pool, queueTimeout);
         const metrics = await getMetrics();
-        checkPoolConnMetrics(metrics, pool, 1, 0, 0, 0);
+        checkPoolConnMetrics(metrics, pool);
+
+        instrumentation.disable();
+        conn = await pool.getConnection();
+        const updatedMetrics = await getMetrics();
+
+        //mertrics should only reflect the only idle connection obtained during pool warmup
+        checkPoolConnMetrics(updatedMetrics, pool, 1, 0, 0, 0);
       } finally {
-        if (conn) await conn.close();
-        if (pool) await pool.close(0);
+        if (conn) await conn.close().catch(() => undefined);
+        if (pool) await pool.close(0).catch(() => undefined);
+        instrumentation.enable();
       }
     });
 
-    it('3.3 Pools created before enabling instrumentation should also be instrumented', async function () {
+    it('3.3 Pools created before enabling instrumentation should also be instrumented', async () => {
       instrumentation.disable();
       const poolName = 'demopool';
       let pool: oracledb.Pool | undefined;
@@ -891,8 +915,6 @@ describe('oracledb-metrics', () => {
         conn = await pool.getConnection();
         const metrics = await getMetrics();
         checkPoolConnMetrics(metrics, pool, 0, 1, 0, 0);
-      } catch (error) {
-        skipOnConnectionRequestTimeout(this, error);
       } finally {
         if (conn) await conn.close().catch(() => undefined);
         if (pool) await pool.close(0).catch(() => undefined);

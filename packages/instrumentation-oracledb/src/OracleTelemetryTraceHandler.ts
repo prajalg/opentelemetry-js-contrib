@@ -71,7 +71,7 @@ function parseMetricOperationName(
 
   const operationName = parseNormalizedOperationName(statement);
 
-  if (/^(BEGIN|DECLARE)\b/.test(operationName)) {
+  if (/^(BEGIN|DECLARE)\b/i.test(operationName)) {
     return isBatch ? 'BATCH PLSQL' : 'PLSQL';
   }
 
@@ -377,9 +377,10 @@ export function getOracleTelemetryTraceHandlerClass(
     // Builds the attribute set used for execute duration metrics.
     private _getExecOperationAttributes(traceContext: TraceSpanData) {
       const isBatch = traceContext.operation === SpanNames.EXECUTE_MANY;
-      const connAttrs = this._getConnectionSpanAttributes(
+      const connAttrs: Record<string, string | number | undefined> =
         traceContext.connectLevelConfig
-      );
+          ? this._getConnectionSpanAttributes(traceContext.connectLevelConfig)
+          : {};
 
       const metricsAttributes: Attributes = {
         [ATTR_DB_SYSTEM_NAME]: DB_SYSTEM_NAME_VALUE_ORACLE_DB,
@@ -395,7 +396,7 @@ export function getOracleTelemetryTraceHandlerClass(
 
       if (traceContext.error)
         metricsAttributes[ATTR_ERROR_TYPE] = traceContext.error.code;
-  
+
       return metricsAttributes;
     }
 

@@ -20,18 +20,18 @@ export const POOL_CONFIG = {
   stmtCacheSize: 23,
 };
 
-export async function waitForCreatePool(pool: oracledb.Pool, time: number) {
-  let retryCount = 5; // counter to wait for new connections to appear
-  while (pool.connectionsOpen < pool.poolMin) {
-    // Let background thread complete poolMin conns.
-    await new Promise(r => setTimeout(r, time));
-    retryCount -= 1;
-    if (retryCount === 0) {
-      console.log('skipping the test on slow networks');
-      return false;
-    }
+export async function waitForCreatePool(
+  pool: oracledb.Pool,
+  timeoutMs: number
+) {
+  const deadline = Date.now() + timeoutMs;
+
+  while (pool.connectionsOpen < pool.poolMin && Date.now() < deadline) {
+    // Let the background pool creation complete without tying the deadline to queueTimeout.
+    await new Promise(resolve => setTimeout(resolve, 100));
   }
-  return true;
+
+  return pool.connectionsOpen >= pool.poolMin;
 }
 
 export function sqlDropTable(tableName: string) {

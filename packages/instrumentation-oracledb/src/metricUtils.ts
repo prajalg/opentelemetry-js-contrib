@@ -149,7 +149,11 @@ export function updateCounter(pool: oracleDBTypes.Pool) {
 
   connectionsTimeouts.add(delta.timeouts, poolAttr);
 
-  connectionsCounterState[poolName] = curr;
+  if (isOpen) {
+    connectionsCounterState[poolName] = curr;
+  } else {
+    delete connectionsCounterState[poolName];
+  }
 }
 
 export function recordOperationDuration(

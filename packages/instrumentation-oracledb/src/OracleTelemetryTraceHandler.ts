@@ -1,6 +1,6 @@
 /*
  * Copyright The OpenTelemetry Authors
- * Copyright (c) 2025, Oracle and/or its affiliates.
+ * Copyright (c) 2025, 2026, Oracle and/or its affiliates.
  * SPDX-License-Identifier: Apache-2.0
  */
 
@@ -15,6 +15,8 @@ import {
   diag,
   TraceFlags,
   SpanContext,
+  Attributes,
+  HrTime,
 } from '@opentelemetry/api';
 import {
   ATTR_DB_NAMESPACE,
@@ -24,6 +26,7 @@ import {
   ATTR_SERVER_PORT,
   ATTR_SERVER_ADDRESS,
   ATTR_NETWORK_TRANSPORT,
+  ATTR_ERROR_TYPE,
 } from '@opentelemetry/semantic-conventions';
 import {
   ATTR_DB_OPERATION_PARAMETER,
@@ -34,6 +37,7 @@ import {
   ATTR_ORACLE_DB_SERVICE,
   DB_SYSTEM_NAME_VALUE_ORACLE_DB,
 } from './semconv';
+import { hrTime } from '@opentelemetry/core';
 
 import type * as oracleDBTypes from 'oracledb';
 type TraceHandlerBaseCtor = new () => any;
@@ -42,6 +46,7 @@ const OUT_BIND = 3003; // bindinfo direction value.
 // Local modules.
 import { OracleInstrumentationConfig, SpanConnectionConfig } from './types';
 import { TraceSpanData, SpanCallLevelConfig } from './internal-types';
+import * as metricsUtils from './metricUtils';
 import { SpanNames } from './constants';
 
 // It dynamically retrieves the TraceHandlerBase class from the oracledb module
@@ -58,15 +63,23 @@ function getTraceHandlerBaseClass(
   }
 }
 
-function parseNormalizedOperationName(statement: string): string {
-  const trimmedStatement = statement.trim();
-  const indexOfFirstSpace = trimmedStatement.indexOf(' ');
-  let sqlCommand =
-    indexOfFirstSpace === -1
-      ? trimmedStatement
-      : trimmedStatement.slice(0, indexOfFirstSpace);
+function parseMetricOperationName(
+  statement: string | undefined,
+  isBatch: boolean
+): string {
+  if (!statement || typeof statement !== 'string') return 'UNKNOWN';
 
-  sqlCommand = sqlCommand.toUpperCase();
+  const operationName = parseNormalizedOperationName(statement);
+
+  if (operationName === 'BEGIN' || operationName === 'DECLARE') {
+    return isBatch ? 'BATCH PLSQL' : 'PLSQL';
+  }
+
+  return isBatch ? `BATCH ${operationName}` : operationName;
+}
+
+function parseNormalizedOperationName(statement: string): string {
+  const sqlCommand = statement.trim().split(/\s+/, 1)[0].toUpperCase();
   return sqlCommand.endsWith(';') ? sqlCommand.slice(0, -1) : sqlCommand;
 }
 
@@ -333,11 +346,11 @@ export function getOracleTelemetryTraceHandlerClass(
       const span = traceContext.userContext.span;
       // Set if additional connection and call parameters
       // are available
-      if (traceContext.connectLevelConfig) {
-        span.setAttributes(
-          this._getConnectionSpanAttributes(traceContext.connectLevelConfig)
-        );
-      }
+      const connAttrs: Attributes = traceContext.connectLevelConfig
+        ? this._getConnectionSpanAttributes(traceContext.connectLevelConfig)
+        : {};
+      span.setAttributes(connAttrs);
+
       if (traceContext.callLevelConfig) {
         this._setCallLevelAttributes(
           span,
@@ -352,6 +365,36 @@ export function getOracleTelemetryTraceHandlerClass(
           message: traceContext.error.message,
         });
       }
+
+      // Builds the attribute set used for execute duration metrics.
+      const isBatch = traceContext.operation === SpanNames.EXECUTE_MANY;
+      const metricsAttributes: Attributes = {
+        [ATTR_DB_SYSTEM_NAME]: DB_SYSTEM_NAME_VALUE_ORACLE_DB,
+        [ATTR_DB_NAMESPACE]: connAttrs[ATTR_DB_NAMESPACE],
+        [ATTR_SERVER_PORT]: connAttrs[ATTR_SERVER_PORT],
+        [ATTR_SERVER_ADDRESS]: connAttrs[ATTR_SERVER_ADDRESS],
+        [ATTR_DB_OPERATION_NAME]: parseMetricOperationName(
+          traceContext.callLevelConfig?.statement,
+          isBatch
+        ),
+      };
+
+      if (traceContext.error) {
+        const errorCode = (traceContext.error as oracleDBTypes.DBError).code;
+        if (errorCode !== undefined) {
+          metricsAttributes[ATTR_ERROR_TYPE] = String(errorCode);
+        }
+      }
+
+      return metricsAttributes;
+    }
+
+    private _recordExecuteDuration(
+      attributes: Attributes,
+      startExecTime: HrTime | undefined
+    ) {
+      if (startExecTime === undefined) return;
+      metricsUtils.recordOperationDuration(attributes, startExecTime);
     }
 
     setInstrumentConfig(config: OracleInstrumentationConfig = {}) {
@@ -375,6 +418,7 @@ export function getOracleTelemetryTraceHandlerClass(
           kind: SpanKind.CLIENT,
           attributes: spanAttributes,
         }),
+        startTime: hrTime(),
       };
 
       if (traceContext.fn) {
@@ -420,12 +464,22 @@ export function getOracleTelemetryTraceHandlerClass(
       if (!traceContext.userContext?.span) {
         return;
       }
-      this._updateFinalSpanAttributes(traceContext);
+      const metricAttributes = this._updateFinalSpanAttributes(traceContext);
       switch (traceContext.operation) {
         case SpanNames.EXECUTE:
+          this._recordExecuteDuration(
+            metricAttributes,
+            traceContext.userContext.startTime
+          );
           this._handleExecuteCustomResult(
             traceContext.userContext.span,
             traceContext
+          );
+          break;
+        case SpanNames.EXECUTE_MANY:
+          this._recordExecuteDuration(
+            metricAttributes,
+            traceContext.userContext.startTime
           );
           break;
         default:
@@ -463,6 +517,34 @@ export function getOracleTelemetryTraceHandlerClass(
       this._updateFinalSpanAttributes(traceContext, true);
       this._updateSpanName(traceContext);
       traceContext.userContext.span.end();
+    }
+
+    onPoolExpand(pool: oracleDBTypes.Pool) {
+      metricsUtils.updateCounter(pool);
+    }
+
+    onPoolShrink(pool: oracleDBTypes.Pool) {
+      metricsUtils.updateCounter(pool);
+    }
+
+    onPoolAcquire(pool: oracleDBTypes.Pool) {
+      metricsUtils.updateCounter(pool);
+    }
+
+    onPoolRelease(pool: oracleDBTypes.Pool) {
+      metricsUtils.updateCounter(pool);
+    }
+
+    onPoolWait(pool: oracleDBTypes.Pool) {
+      metricsUtils.updateCounter(pool);
+    }
+
+    onPoolRequestTimeout(pool: oracleDBTypes.Pool) {
+      metricsUtils.updateCounter(pool);
+    }
+
+    onPoolClose(pool: oracleDBTypes.Pool) {
+      metricsUtils.updateCounter(pool);
     }
   }
   return OracleTelemetryTraceHandler;

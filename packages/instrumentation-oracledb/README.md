@@ -29,6 +29,8 @@ npm install --save @opentelemetry/instrumentation-oracledb
 
 - [`oracledb`](https://www.npmjs.com/package/oracledb) versions `>=6.7.0 <8`
 
+> **Note:** Metrics are only emitted when using `oracledb` versions `>=7.0.0`.
+
 ## Usage
 
 OpenTelemetry OracleInstrumentation allows the user to automatically collect trace data and export them to the backend of choice, to give observability to distributed systems when working with [oracledb](https://www.npmjs.com/package/oracledb). This module works with both Thin and Thick modes of the oracledb
@@ -107,6 +109,12 @@ For Thin mode, additional internal round-trip spans will be emitted, such as:
   been resolved by the driver.
 - Failed logins may still include the attempted service name, which is useful
   for debugging connection issues.
+- Connection pool metrics identify pools by `poolAlias` when one is set. If a
+  pool does not have a `poolAlias`, the instrumentation falls back to the
+  pool's `connectString`. Applications that create multiple pools with the same
+  `connectString` should set distinct `poolAlias` values; otherwise, connection
+  pool metrics for those pools are reported under the same pool name and may be
+  aggregated incorrectly.
 
 ## Semantic Conventions
 

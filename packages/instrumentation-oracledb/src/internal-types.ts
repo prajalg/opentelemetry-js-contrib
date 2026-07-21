@@ -1,6 +1,6 @@
 /*
  * Copyright The OpenTelemetry Authors
- * Copyright (c) 2025, Oracle and/or its affiliates.
+ * Copyright (c) 2025, 2026, Oracle and/or its affiliates.
  * SPDX-License-Identifier: Apache-2.0
  */
 
@@ -12,6 +12,7 @@ import { SpanConnectionConfig } from './types';
 // received in onExitFn to end the span.
 export interface InstrumentationContext {
   span: api.Span;
+  startTime?: api.HrTime;
 }
 
 // Captures the entire span data.

@@ -20,11 +20,10 @@ export class OracleInstrumentation extends InstrumentationBase {
 
   constructor(config: OracleInstrumentationConfig = {}) {
     super(PACKAGE_NAME, PACKAGE_VERSION, config);
-    metrics._setMetricInstruments(this.meter);
   }
 
   protected override _updateMetricInstruments(): void {
-    metrics._setMetricInstruments(this.meter);
+    metrics.setMetricInstruments(this.meter);
   }
 
   protected init() {

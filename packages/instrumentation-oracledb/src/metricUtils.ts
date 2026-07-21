@@ -29,11 +29,11 @@ import {
   METRIC_DB_CLIENT_CONNECTION_TIMEOUTS,
 } from './semconv';
 
-let _operationDuration!: Histogram;
-let _connectionsCount!: UpDownCounter;
-let _connectionPendingRequests!: UpDownCounter;
-let _connectionsTimeouts!: Counter;
-const _connectionsCounter: Record<string, PoolConnectionsCounter> = {};
+let operationDuration!: Histogram;
+let connectionsCount!: UpDownCounter;
+let connectionPendingRequests!: UpDownCounter;
+let connectionsTimeouts!: Counter;
+const connectionsCounterState: Record<string, PoolConnectionsCounter> = {};
 
 export interface PoolConnectionsCounter {
   idle: number;
@@ -46,14 +46,11 @@ export interface PoolConnectionsCounter {
 export function getPoolName(
   pool: oracleDBTypes.Pool & { connectString?: string }
 ): string {
-  const poolAlias = pool.poolAlias?.trim();
-  if (poolAlias) return poolAlias;
-
-  return pool.connectString!.trim();
+  return pool.poolAlias?.trim() || pool.connectString!.trim();
 }
 
-export function _setMetricInstruments(meter: Meter) {
-  _connectionsCount = meter.createUpDownCounter(
+export function setMetricInstruments(meter: Meter) {
+  connectionsCount = meter.createUpDownCounter(
     METRIC_DB_CLIENT_CONNECTION_COUNT,
     {
       description:
@@ -62,7 +59,7 @@ export function _setMetricInstruments(meter: Meter) {
     }
   );
 
-  _connectionPendingRequests = meter.createUpDownCounter(
+  connectionPendingRequests = meter.createUpDownCounter(
     METRIC_DB_CLIENT_CONNECTION_PENDING_REQUESTS,
     {
       description:
@@ -71,7 +68,7 @@ export function _setMetricInstruments(meter: Meter) {
     }
   );
 
-  _connectionsTimeouts = meter.createCounter(
+  connectionsTimeouts = meter.createCounter(
     METRIC_DB_CLIENT_CONNECTION_TIMEOUTS,
     {
       description:
@@ -80,7 +77,7 @@ export function _setMetricInstruments(meter: Meter) {
     }
   );
 
-  _operationDuration = meter.createHistogram(
+  operationDuration = meter.createHistogram(
     METRIC_DB_CLIENT_OPERATION_DURATION,
     {
       description: 'Duration of database client operations.',
@@ -94,61 +91,65 @@ export function _setMetricInstruments(meter: Meter) {
     }
   );
 
-  Object.keys(_connectionsCounter).forEach(p => {
-    _connectionsCounter[p] = { used: 0, idle: 0, pending: 0, timeouts: 0 };
-  });
+  for (const pool in connectionsCounterState) {
+    connectionsCounterState[pool] = {
+      used: 0,
+      idle: 0,
+      pending: 0,
+      timeouts: 0,
+    };
+  }
 }
 
 export function updateCounter(pool: oracleDBTypes.Pool) {
   if (!pool) return;
-  const poolName = getPoolName(pool);
 
-  const latest = _connectionsCounter[poolName] || {
+  const poolName = getPoolName(pool);
+  const prev = connectionsCounterState[poolName] || {
     idle: 0,
     used: 0,
     pending: 0,
     timeouts: 0,
   };
 
-  const statistics =
-    pool.status === oracleDBTypes.POOL_STATUS_OPEN
-      ? pool.getStatistics()
-      : undefined;
-  const metrics: PoolConnectionsCounter =
-    pool.status === oracleDBTypes.POOL_STATUS_OPEN
-      ? {
-          used: pool.connectionsInUse,
-          idle: pool.connectionsOpen - pool.connectionsInUse,
-          pending: statistics?.currentQueueLength ?? 0,
-          timeouts: statistics?.requestTimeouts ?? 0,
-        }
-      : { used: 0, idle: 0, pending: 0, timeouts: 0 };
+  const isOpen = pool.status === oracleDBTypes.POOL_STATUS_OPEN;
+  const statistics = isOpen ? pool.getStatistics?.() : undefined;
+
+  const curr: PoolConnectionsCounter = isOpen
+    ? {
+        used: pool.connectionsInUse,
+        idle: pool.connectionsOpen - pool.connectionsInUse,
+        pending: statistics?.currentQueueLength ?? 0,
+        timeouts: statistics?.requestTimeouts ?? 0,
+      }
+    : { used: 0, idle: 0, pending: 0, timeouts: 0 };
 
   // all delta calculation at once
   const delta = {
-    used: metrics.used - latest.used,
-    idle: metrics.idle - latest.idle,
-    pending: metrics.pending - latest.pending,
-    timeouts: Math.max(metrics.timeouts - latest.timeouts, 0),
+    used: curr.used - prev.used,
+    idle: curr.idle - prev.idle,
+    pending: curr.pending - prev.pending,
+    timeouts: Math.max(curr.timeouts - prev.timeouts, 0),
   };
 
+  const poolAttr = { [ATTR_DB_CLIENT_CONNECTION_POOL_NAME]: poolName };
+
   // apply deltas & update counters
-  _connectionsCount.add(delta.used, {
+  connectionsCount.add(delta.used, {
+    ...poolAttr,
     [ATTR_DB_CLIENT_CONNECTION_STATE]: DB_CLIENT_CONNECTION_STATE_VALUE_USED,
-    [ATTR_DB_CLIENT_CONNECTION_POOL_NAME]: poolName,
-  });
-  _connectionsCount.add(delta.idle, {
-    [ATTR_DB_CLIENT_CONNECTION_STATE]: DB_CLIENT_CONNECTION_STATE_VALUE_IDLE,
-    [ATTR_DB_CLIENT_CONNECTION_POOL_NAME]: poolName,
-  });
-  _connectionPendingRequests.add(delta.pending, {
-    [ATTR_DB_CLIENT_CONNECTION_POOL_NAME]: poolName,
-  });
-  _connectionsTimeouts.add(delta.timeouts, {
-    [ATTR_DB_CLIENT_CONNECTION_POOL_NAME]: poolName,
   });
 
-  _connectionsCounter[poolName] = metrics;
+  connectionsCount.add(delta.idle, {
+    ...poolAttr,
+    [ATTR_DB_CLIENT_CONNECTION_STATE]: DB_CLIENT_CONNECTION_STATE_VALUE_IDLE,
+  });
+
+  connectionPendingRequests.add(delta.pending, poolAttr);
+
+  connectionsTimeouts.add(delta.timeouts, poolAttr);
+
+  connectionsCounterState[poolName] = curr;
 }
 
 export function recordOperationDuration(
@@ -157,5 +158,5 @@ export function recordOperationDuration(
 ) {
   const durationSeconds =
     hrTimeToMilliseconds(hrTimeDuration(startExecTime, hrTime())) / 1000;
-  _operationDuration.record(durationSeconds, metricsAttributes);
+  operationDuration.record(durationSeconds, metricsAttributes);
 }

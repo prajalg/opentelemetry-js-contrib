@@ -71,7 +71,7 @@ function parseMetricOperationName(
 
   const operationName = parseNormalizedOperationName(statement);
 
-  if (/^(BEGIN|DECLARE)\b/i.test(operationName)) {
+  if (operationName === 'BEGIN' || operationName === 'DECLARE') {
     return isBatch ? 'BATCH PLSQL' : 'PLSQL';
   }
 
@@ -79,14 +79,7 @@ function parseMetricOperationName(
 }
 
 function parseNormalizedOperationName(statement: string): string {
-  const trimmedStatement = statement.trim();
-  const indexOfFirstSpace = trimmedStatement.indexOf(' ');
-  let sqlCommand =
-    indexOfFirstSpace === -1
-      ? trimmedStatement
-      : trimmedStatement.slice(0, indexOfFirstSpace);
-
-  sqlCommand = sqlCommand.toUpperCase();
+  const sqlCommand = statement.trim().split(/\s+/, 1)[0].toUpperCase();
   return sqlCommand.endsWith(';') ? sqlCommand.slice(0, -1) : sqlCommand;
 }
 
@@ -353,11 +346,11 @@ export function getOracleTelemetryTraceHandlerClass(
       const span = traceContext.userContext.span;
       // Set if additional connection and call parameters
       // are available
-      if (traceContext.connectLevelConfig) {
-        span.setAttributes(
-          this._getConnectionSpanAttributes(traceContext.connectLevelConfig)
-        );
-      }
+      const connAttrs: Attributes = traceContext.connectLevelConfig
+        ? this._getConnectionSpanAttributes(traceContext.connectLevelConfig)
+        : {};
+      span.setAttributes(connAttrs);
+
       if (traceContext.callLevelConfig) {
         this._setCallLevelAttributes(
           span,
@@ -372,40 +365,35 @@ export function getOracleTelemetryTraceHandlerClass(
           message: traceContext.error.message,
         });
       }
-    }
 
-    // Builds the attribute set used for execute duration metrics.
-    private _getExecOperationAttributes(traceContext: TraceSpanData) {
+      // Builds the attribute set used for execute duration metrics.
       const isBatch = traceContext.operation === SpanNames.EXECUTE_MANY;
-      const connAttrs: Record<string, string | number | undefined> =
-        traceContext.connectLevelConfig
-          ? this._getConnectionSpanAttributes(traceContext.connectLevelConfig)
-          : {};
-
       const metricsAttributes: Attributes = {
         [ATTR_DB_SYSTEM_NAME]: DB_SYSTEM_NAME_VALUE_ORACLE_DB,
         [ATTR_DB_NAMESPACE]: connAttrs[ATTR_DB_NAMESPACE],
         [ATTR_SERVER_PORT]: connAttrs[ATTR_SERVER_PORT],
         [ATTR_SERVER_ADDRESS]: connAttrs[ATTR_SERVER_ADDRESS],
-        // Metric operation names also normalize PLSQL and executeMany batch operations.
         [ATTR_DB_OPERATION_NAME]: parseMetricOperationName(
           traceContext.callLevelConfig?.statement,
           isBatch
         ),
       };
 
-      if (traceContext.error)
-        metricsAttributes[ATTR_ERROR_TYPE] = traceContext.error.code;
+      if (traceContext.error) {
+        const errorCode = (traceContext.error as oracleDBTypes.DBError).code;
+        if (errorCode !== undefined) {
+          metricsAttributes[ATTR_ERROR_TYPE] = String(errorCode);
+        }
+      }
 
       return metricsAttributes;
     }
 
     private _recordExecuteDuration(
-      traceContext: TraceSpanData,
+      attributes: Attributes,
       startExecTime: HrTime | undefined
     ) {
       if (startExecTime === undefined) return;
-      const attributes = this._getExecOperationAttributes(traceContext);
       metricsUtils.recordOperationDuration(attributes, startExecTime);
     }
 
@@ -476,11 +464,11 @@ export function getOracleTelemetryTraceHandlerClass(
       if (!traceContext.userContext?.span) {
         return;
       }
-      this._updateFinalSpanAttributes(traceContext);
+      const metricAttributes = this._updateFinalSpanAttributes(traceContext);
       switch (traceContext.operation) {
         case SpanNames.EXECUTE:
           this._recordExecuteDuration(
-            traceContext,
+            metricAttributes,
             traceContext.userContext.startTime
           );
           this._handleExecuteCustomResult(
@@ -490,7 +478,7 @@ export function getOracleTelemetryTraceHandlerClass(
           break;
         case SpanNames.EXECUTE_MANY:
           this._recordExecuteDuration(
-            traceContext,
+            metricAttributes,
             traceContext.userContext.startTime
           );
           break;

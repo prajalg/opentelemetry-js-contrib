@@ -4,9 +4,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import {
-  safeExecuteInTheMiddle
-} from '@opentelemetry/instrumentation';
+import { safeExecuteInTheMiddle } from '@opentelemetry/instrumentation';
 import {
   type Span,
   SpanStatusCode,
@@ -46,7 +44,10 @@ type TraceHandlerBaseCtor = new () => any;
 const OUT_BIND = 3003; // bindinfo direction value.
 
 // Local modules.
-import type { OracleInstrumentationConfig, SpanConnectionConfig } from './types';
+import type {
+  OracleInstrumentationConfig,
+  SpanConnectionConfig,
+} from './types';
 import type { TraceSpanData, SpanCallLevelConfig } from './internal-types';
 import * as metricsUtils from './metricUtils';
 import { SpanNames } from './constants';
@@ -81,7 +82,23 @@ function parseMetricOperationName(
 }
 
 function parseNormalizedOperationName(statement: string): string {
-  const sqlCommand = statement.trim().split(/\s+/, 1)[0].toUpperCase();
+  const trimmed = statement.trim();
+  let end = trimmed.length;
+  for (let i = 0; i < trimmed.length; i++) {
+    const c = trimmed[i];
+    if (
+      c === ' ' ||
+      c === '\t' ||
+      c === '\n' ||
+      c === '\r' ||
+      c === '\v' ||
+      c === '\f'
+    ) {
+      end = i;
+      break;
+    }
+  }
+  const sqlCommand = trimmed.slice(0, end).toUpperCase();
   return sqlCommand.endsWith(';') ? sqlCommand.slice(0, -1) : sqlCommand;
 }
 

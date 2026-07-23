@@ -4,19 +4,21 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { safeExecuteInTheMiddle } from '@opentelemetry/instrumentation';
 import {
-  Span,
+  safeExecuteInTheMiddle
+} from '@opentelemetry/instrumentation';
+import {
+  type Span,
   SpanStatusCode,
-  Tracer,
+  type Tracer,
   context,
   SpanKind,
   trace,
   diag,
   TraceFlags,
-  SpanContext,
-  Attributes,
-  HrTime,
+  type SpanContext,
+  type Attributes,
+  type HrTime,
 } from '@opentelemetry/api';
 import {
   ATTR_DB_NAMESPACE,
@@ -44,8 +46,8 @@ type TraceHandlerBaseCtor = new () => any;
 const OUT_BIND = 3003; // bindinfo direction value.
 
 // Local modules.
-import { OracleInstrumentationConfig, SpanConnectionConfig } from './types';
-import { TraceSpanData, SpanCallLevelConfig } from './internal-types';
+import type { OracleInstrumentationConfig, SpanConnectionConfig } from './types';
+import type { TraceSpanData, SpanCallLevelConfig } from './internal-types';
 import * as metricsUtils from './metricUtils';
 import { SpanNames } from './constants';
 

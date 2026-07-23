@@ -9,7 +9,7 @@ import {
   InstrumentationNodeModuleDefinition,
 } from '@opentelemetry/instrumentation';
 import type * as oracleDBTypes from 'oracledb';
-import { OracleInstrumentationConfig } from './types';
+import type { OracleInstrumentationConfig } from './types';
 import * as metrics from './metricUtils';
 import { getOracleTelemetryTraceHandlerClass } from './OracleTelemetryTraceHandler';
 /** @knipignore */

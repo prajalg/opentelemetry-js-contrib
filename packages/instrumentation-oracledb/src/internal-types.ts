@@ -4,9 +4,9 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import type * as oracledbTypes from 'oracledb';
 import type * as api from '@opentelemetry/api';
-import { SpanConnectionConfig } from './types';
+import type * as oracledbTypes from 'oracledb';
+import type { SpanConnectionConfig } from './types';
 
 // onEnterFn returns this Context(contains only span for now) and it is
 // received in onExitFn to end the span.

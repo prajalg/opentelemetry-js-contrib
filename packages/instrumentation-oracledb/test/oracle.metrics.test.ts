@@ -328,7 +328,10 @@ describe('oracledb-metrics', () => {
       }
 
       it('1.1.1 Metrics should include poolMin numnber of connections upon pool warmup', async () => {
-        await utils.waitForCreatePool(pool, queueTimeout);
+        assert.ok(
+          await utils.waitForCreatePool(pool, queueTimeout),
+          `expected ${poolName} to warm up`
+        );
         const metrics = await getMetrics();
         checkPoolConnMetrics(metrics, pool, pool.poolMin, 0);
       });
@@ -884,7 +887,10 @@ describe('oracledb-metrics', () => {
           enableStatistics: true,
           poolTimeout: 5,
         });
-        await utils.waitForCreatePool(pool, queueTimeout);
+        assert.ok(
+          await utils.waitForCreatePool(pool, queueTimeout),
+          `expected ${poolName} to warm up`
+        );
         const metrics = await getMetrics();
         checkPoolConnMetrics(metrics, pool);
 

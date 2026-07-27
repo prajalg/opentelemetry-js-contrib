@@ -4,13 +4,14 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import type {
-  Attributes,
-  Counter,
-  Histogram,
-  HrTime,
-  Meter,
-  UpDownCounter,
+import {
+  type Attributes,
+  type Counter,
+  type Histogram,
+  type HrTime,
+  type Meter,
+  type UpDownCounter,
+  ValueType,
 } from '@opentelemetry/api';
 import {
   hrTime,
@@ -46,7 +47,7 @@ export interface PoolConnectionsCounter {
 export function getPoolName(
   pool: oracleDBTypes.Pool & { connectString?: string }
 ): string {
-  return pool.poolAlias?.trim() || pool.connectString!.trim();
+  return pool.poolAlias?.trim() || pool.connectString?.trim() || 'default';
 }
 
 export function setMetricInstruments(meter: Meter) {
@@ -82,7 +83,7 @@ export function setMetricInstruments(meter: Meter) {
     {
       description: 'Duration of database client operations.',
       unit: 's',
-      valueType: 1,
+      valueType: ValueType.DOUBLE,
       advice: {
         explicitBucketBoundaries: [
           0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1, 5, 10,

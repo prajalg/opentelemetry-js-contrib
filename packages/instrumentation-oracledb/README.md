@@ -97,6 +97,44 @@ For Thin mode, additional internal round-trip spans will be emitted, such as:
 | `requireParentSpan` | `boolean` | `false` | If true, only creates spans when there is an active parent span. |
 | `propagateTraceContextToSessionAction` | `boolean` | `false` | If true, injects W3C Trace Context into the Oracle `V$SESSION.ACTION` field so database-side tracing can be correlated with application spans. |
 
+### Metrics
+
+Metrics are emitted for `oracledb` versions `>=7.0.0`, because the driver
+metrics APIs used by this instrumentation are available from that version
+onwards.
+
+| Metric | Instrument | Unit | Description |
+| ------ | ---------- | ---- | ----------- |
+| `db.client.operation.duration` | Histogram | `s` | Duration of database client operations. |
+| `db.client.connection.count` | UpDownCounter | `{connection}` | Number of pool connections currently in the state described by `db.client.connection.state`. |
+| `db.client.connection.pending_requests` | UpDownCounter | `{request}` | Number of requests currently waiting for a pool connection. |
+| `db.client.connection.timeouts` | Counter | `{timeout}` | Number of connection requests that timed out while waiting for a pool connection. |
+
+The `db.client.operation.duration` metric includes these attributes when
+available:
+
+| Attribute | Description |
+| --------- | ----------- |
+| `db.system.name` | Always `oracle.db`. |
+| `db.namespace` | Oracle database identifier. |
+| `server.address` | Remote database host. |
+| `server.port` | Remote database port. |
+| `db.operation.name` | Parsed SQL operation name, such as `SELECT`, `PLSQL`, `BATCH INSERT`, or `BATCH PLSQL`. |
+| `error.type` | Oracle error code when the operation fails. |
+
+Pool metrics are updated when the driver reports pool lifecycle events,
+including pool growth, shrink, acquire, release, wait, request timeout, and
+close. `db.client.connection.count` emits one datapoint per pool state using
+`db.client.connection.state` with values `idle` and `used`. Pool metrics include
+`db.client.connection.pool.name`.
+
+Pool names should be unique within the instrumented application. This
+instrumentation uses `poolAlias` as `db.client.connection.pool.name` when it is
+set. If `poolAlias` is not set, it falls back to the pool `connectString`, and
+then to `default`. Applications that create multiple pools with the same
+connection string should set distinct `poolAlias` values so those pools are
+reported separately.
+
 ## OracleDB-specific Notes
 
 - Thin mode emits internal round-trip spans. Thick mode does not.
@@ -109,12 +147,6 @@ For Thin mode, additional internal round-trip spans will be emitted, such as:
   been resolved by the driver.
 - Failed logins may still include the attempted service name, which is useful
   for debugging connection issues.
-- Connection pool metrics identify pools by `poolAlias` when one is set. If a
-  pool does not have a `poolAlias`, the instrumentation falls back to the
-  pool's `connectString`. Applications that create multiple pools with the same
-  `connectString` should set distinct `poolAlias` values; otherwise, connection
-  pool metrics for those pools are reported under the same pool name and may be
-  aggregated incorrectly.
 
 ## Semantic Conventions
 

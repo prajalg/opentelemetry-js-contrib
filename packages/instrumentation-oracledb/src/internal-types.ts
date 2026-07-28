@@ -8,8 +8,8 @@ import type * as api from '@opentelemetry/api';
 import type * as oracledbTypes from 'oracledb';
 import type { SpanConnectionConfig } from './types';
 
-// onEnterFn returns this Context(contains only span for now) and it is
-// received in onExitFn to end the span.
+// onEnterFn returns this context with the span and timing data needed by
+// onExitFn to end the span and record operation duration metrics.
 export interface InstrumentationContext {
   span: api.Span;
   startTime?: api.HrTime;

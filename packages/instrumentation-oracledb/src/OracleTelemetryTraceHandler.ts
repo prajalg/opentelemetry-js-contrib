@@ -85,15 +85,9 @@ function parseNormalizedOperationName(statement: string): string {
   const trimmed = statement.trim();
   let end = trimmed.length;
   for (let i = 0; i < trimmed.length; i++) {
-    const c = trimmed[i];
-    if (
-      c === ' ' ||
-      c === '\t' ||
-      c === '\n' ||
-      c === '\r' ||
-      c === '\v' ||
-      c === '\f'
-    ) {
+    const code = trimmed.charCodeAt(i);
+    // Checks for space (32), tab (9), LF (10), VT (11), FF (12), CR (13)
+    if (code === 32 || (code >= 9 && code <= 13)) {
       end = i;
       break;
     }
@@ -119,9 +113,10 @@ export function getOracleTelemetryTraceHandlerClass(
   /**
    * OracleTelemetryTraceHandler extends TraceHandlerBase from oracledb module
    * It implements the abstract methods; `onEnterFn`, `onExitFn`,
-   * `onBeginRoundTrip` and `onEndRoundTrip` of TraceHandlerBase class.
+   * `onBeginRoundTrip`, `onEndRoundTrip` and pool event hooks like `onPoolAcquire`,
+   * `onPoolRelease`, `onPoolWait`, etc. of TraceHandlerBase class.
    * Inside these overridden methods, the input traceContext data is used
-   * to generate attributes for span.
+   * to generate attributes for spans and metrics.
    */
   class OracleTelemetryTraceHandler extends traceHandlerBase {
     private _getTracer: () => Tracer;
@@ -354,10 +349,14 @@ export function getOracleTelemetryTraceHandlerClass(
       );
     }
 
-    // Updates the span with final traceContext attributes
-    // which are updated after the exported function call.
-    // roundTrip flag will skip dumping bind values for
-    // internal roundtrip spans generated for exported functions.
+    /**
+     * Updates the span with final traceContext attributes which are updated
+     * after the exported function call.
+     *
+     * @param traceContext - Context containing span instance, connection configs, and execution status/errors.
+     * @param roundTrip - Optional flag. When true, skips recording bind values for internal round-trip spans generated for exported functions.
+     * @returns The attribute map used for recording database client operation duration metrics.
+     */
     private _updateFinalSpanAttributes(
       traceContext: TraceSpanData,
       roundTrip = false
@@ -416,12 +415,16 @@ export function getOracleTelemetryTraceHandlerClass(
       metricsUtils.recordOperationDuration(attributes, startExecTime);
     }
 
+    private _updatePool(pool: oracleDBTypes.Pool) {
+      metricsUtils.updateCounter(pool);
+    }
+
     setInstrumentConfig(config: OracleInstrumentationConfig = {}) {
       this._instrumentConfig = config;
     }
 
     // This method is invoked before calling an exported function
-    // from oracledb module.
+    // from oracledb module. It also stores the time when the span is started.
     onEnterFn(traceContext: TraceSpanData) {
       if (this._shouldSkipInstrumentation()) {
         return;
@@ -479,33 +482,31 @@ export function getOracleTelemetryTraceHandlerClass(
 
     // This method is invoked after exported function from oracledb module
     // completes.
-    onExitFn(traceContext: TraceSpanData) {
-      if (!traceContext.userContext?.span) {
+    onExitFn(traceContext: TraceSpanData): void {
+      const userContext = traceContext.userContext;
+      if (!userContext?.span) {
         return;
       }
+
+      const { span, startTime } = userContext;
+      const { operation } = traceContext;
       const metricAttributes = this._updateFinalSpanAttributes(traceContext);
-      switch (traceContext.operation) {
+
+      const isExecute = operation === SpanNames.EXECUTE;
+      const isExecuteMany = operation === SpanNames.EXECUTE_MANY;
+
+      if (isExecute || isExecuteMany) {
+        this._recordExecuteDuration(metricAttributes, startTime);
+      }
+
+      switch (operation) {
         case SpanNames.EXECUTE:
-          this._recordExecuteDuration(
-            metricAttributes,
-            traceContext.userContext.startTime
-          );
-          this._handleExecuteCustomResult(
-            traceContext.userContext.span,
-            traceContext
-          );
-          break;
-        case SpanNames.EXECUTE_MANY:
-          this._recordExecuteDuration(
-            metricAttributes,
-            traceContext.userContext.startTime
-          );
-          break;
-        default:
+          this._handleExecuteCustomResult(span, traceContext);
           break;
       }
+
       this._updateSpanName(traceContext);
-      traceContext.userContext.span.end();
+      span.end();
     }
 
     // This method is invoked before a round trip call to DB is done
@@ -539,31 +540,31 @@ export function getOracleTelemetryTraceHandlerClass(
     }
 
     onPoolExpand(pool: oracleDBTypes.Pool) {
-      metricsUtils.updateCounter(pool);
+      this._updatePool(pool);
     }
 
     onPoolShrink(pool: oracleDBTypes.Pool) {
-      metricsUtils.updateCounter(pool);
+      this._updatePool(pool);
     }
 
     onPoolAcquire(pool: oracleDBTypes.Pool) {
-      metricsUtils.updateCounter(pool);
+      this._updatePool(pool);
     }
 
     onPoolRelease(pool: oracleDBTypes.Pool) {
-      metricsUtils.updateCounter(pool);
+      this._updatePool(pool);
     }
 
     onPoolWait(pool: oracleDBTypes.Pool) {
-      metricsUtils.updateCounter(pool);
+      this._updatePool(pool);
     }
 
     onPoolRequestTimeout(pool: oracleDBTypes.Pool) {
-      metricsUtils.updateCounter(pool);
+      this._updatePool(pool);
     }
 
     onPoolClose(pool: oracleDBTypes.Pool) {
-      metricsUtils.updateCounter(pool);
+      this._updatePool(pool);
     }
   }
   return OracleTelemetryTraceHandler;

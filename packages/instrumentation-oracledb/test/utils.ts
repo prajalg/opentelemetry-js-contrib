@@ -27,7 +27,7 @@ export async function waitForCreatePool(
   const deadline = Date.now() + timeoutMs;
 
   while (pool.connectionsOpen < pool.poolMin && Date.now() < deadline) {
-    // Let the background pool creation complete without tying the deadline to queueTimeout.
+    // Let the background poolMin connection creation complete.
     await new Promise(resolve => setTimeout(resolve, 100));
   }
 

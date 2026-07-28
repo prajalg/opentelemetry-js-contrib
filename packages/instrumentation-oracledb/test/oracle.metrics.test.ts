@@ -17,7 +17,6 @@ import * as assert from 'assert';
 import { OracleInstrumentation } from '../src';
 import { registerInstrumentationTesting } from '@opentelemetry/contrib-test-utils';
 
-// let netTime : number
 const instrumentation = registerInstrumentationTesting(
   new OracleInstrumentation({ enhancedDatabaseReporting: true })
 );
@@ -898,7 +897,7 @@ describe('oracledb-metrics', () => {
         conn = await pool.getConnection();
         const updatedMetrics = await getMetrics();
 
-        //mertrics should only reflect the only idle connection obtained during pool warmup
+        // Metrics should only reflect the idle connection created during pool warmup.
         checkPoolConnMetrics(updatedMetrics, pool, 1, 0, 0, 0);
       } finally {
         if (conn) await conn.close().catch(() => undefined);

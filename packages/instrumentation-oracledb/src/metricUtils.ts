@@ -43,7 +43,33 @@ export interface PoolConnectionsCounter {
   timeouts: number;
 }
 
-// To be discussed
+const EMPTY_COUNTER_STATE: PoolConnectionsCounter = {
+  idle: 0,
+  pending: 0,
+  used: 0,
+  timeouts: 0,
+};
+
+function createEmptyCounterState(): PoolConnectionsCounter {
+  return { ...EMPTY_COUNTER_STATE };
+}
+
+function getCurrentPoolState(pool: oracleDBTypes.Pool): PoolConnectionsCounter {
+  if (pool.status !== oracleDBTypes.POOL_STATUS_OPEN) {
+    return createEmptyCounterState();
+  }
+
+  const statistics = pool.getStatistics?.();
+
+  return {
+    used: pool.connectionsInUse,
+    idle: pool.connectionsOpen - pool.connectionsInUse,
+    pending: statistics?.currentQueueLength ?? 0,
+    timeouts: statistics?.requestTimeouts ?? 0,
+  };
+}
+
+// Returns the pool name used in connection pool metric attributes.
 export function getPoolName(
   pool: oracleDBTypes.Pool & { connectString?: string }
 ): string {
@@ -92,13 +118,8 @@ export function setMetricInstruments(meter: Meter) {
     }
   );
 
-  for (const pool in connectionsCounterState) {
-    connectionsCounterState[pool] = {
-      used: 0,
-      idle: 0,
-      pending: 0,
-      timeouts: 0,
-    };
+  for (const poolName of Object.keys(connectionsCounterState)) {
+    connectionsCounterState[poolName] = createEmptyCounterState();
   }
 }
 
@@ -106,51 +127,30 @@ export function updateCounter(pool: oracleDBTypes.Pool) {
   if (!pool) return;
 
   const poolName = getPoolName(pool);
-  const prev = connectionsCounterState[poolName] || {
-    idle: 0,
-    used: 0,
-    pending: 0,
-    timeouts: 0,
-  };
+  const prev = connectionsCounterState[poolName] ?? createEmptyCounterState();
+  const curr = getCurrentPoolState(pool);
 
-  const isOpen = pool.status === oracleDBTypes.POOL_STATUS_OPEN;
-  const statistics = isOpen ? pool.getStatistics?.() : undefined;
-
-  const curr: PoolConnectionsCounter = isOpen
-    ? {
-        used: pool.connectionsInUse,
-        idle: pool.connectionsOpen - pool.connectionsInUse,
-        pending: statistics?.currentQueueLength ?? 0,
-        timeouts: statistics?.requestTimeouts ?? 0,
-      }
-    : { used: 0, idle: 0, pending: 0, timeouts: 0 };
-
-  // all delta calculation at once
-  const delta = {
-    used: curr.used - prev.used,
-    idle: curr.idle - prev.idle,
-    pending: curr.pending - prev.pending,
-    timeouts: Math.max(curr.timeouts - prev.timeouts, 0),
-  };
+  const deltaUsed = curr.used - prev.used;
+  const deltaIdle = curr.idle - prev.idle;
+  const deltaPending = curr.pending - prev.pending;
+  const deltaTimeouts = Math.max(curr.timeouts - prev.timeouts, 0);
 
   const poolAttr = { [ATTR_DB_CLIENT_CONNECTION_POOL_NAME]: poolName };
 
-  // apply deltas & update counters
-  connectionsCount.add(delta.used, {
+  connectionsCount.add(deltaUsed, {
     ...poolAttr,
     [ATTR_DB_CLIENT_CONNECTION_STATE]: DB_CLIENT_CONNECTION_STATE_VALUE_USED,
   });
 
-  connectionsCount.add(delta.idle, {
+  connectionsCount.add(deltaIdle, {
     ...poolAttr,
     [ATTR_DB_CLIENT_CONNECTION_STATE]: DB_CLIENT_CONNECTION_STATE_VALUE_IDLE,
   });
 
-  connectionPendingRequests.add(delta.pending, poolAttr);
+  connectionPendingRequests.add(deltaPending, poolAttr);
+  connectionsTimeouts.add(deltaTimeouts, poolAttr);
 
-  connectionsTimeouts.add(delta.timeouts, poolAttr);
-
-  if (isOpen) {
+  if (pool.status === oracleDBTypes.POOL_STATUS_OPEN) {
     connectionsCounterState[poolName] = curr;
   } else {
     delete connectionsCounterState[poolName];

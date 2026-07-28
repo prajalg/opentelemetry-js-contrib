@@ -399,7 +399,7 @@ export function getOracleTelemetryTraceHandlerClass(
       };
 
       if (traceContext.error) {
-        const errorCode = (traceContext.error as oracleDBTypes.DBError).code;
+        const errorCode = traceContext.error.code;
         if (errorCode !== undefined) {
           metricsAttributes[ATTR_ERROR_TYPE] = String(errorCode);
         }

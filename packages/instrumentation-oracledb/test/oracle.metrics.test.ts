@@ -931,5 +931,47 @@ describe('oracledb-metrics', () => {
         instrumentation.enable();
       }
     });
+
+    it('3.4 Pool state changes while disabled should reconcile on the next pool event', async () => {
+      instrumentation.enable();
+      const poolName = 'reconcile-pool';
+      let pool: oracledb.Pool | undefined;
+      let disabledConnection: oracledb.Connection | undefined;
+      let enabledConnection: oracledb.Connection | undefined;
+      try {
+        pool = await oracledb.createPool({
+          ...utils.POOL_CONFIG,
+          poolMin: 1,
+          poolMax: 3,
+          queueTimeout,
+          poolAlias: poolName,
+          enableStatistics: true,
+          poolTimeout: 5,
+        });
+        assert.ok(
+          await utils.waitForCreatePool(pool, queueTimeout),
+          `expected ${poolName} to warm up`
+        );
+
+        // Establish the initial reported state: one idle connection.
+        checkPoolConnMetrics(await getMetrics(), pool, 1, 0, 0, 0);
+
+        instrumentation.disable();
+        disabledConnection = await pool.getConnection();
+        assert.strictEqual(pool.connectionsInUse, 1);
+
+        instrumentation.enable();
+        // This acquire is the first pool callback after re-enabling. It must
+        // reconcile both this acquire and the acquire missed while disabled.
+        enabledConnection = await pool.getConnection();
+
+        checkPoolConnMetrics(await getMetrics(), pool, 0, 2, 0, 0);
+      } finally {
+        await enabledConnection?.close().catch(() => undefined);
+        await disabledConnection?.close().catch(() => undefined);
+        await pool?.close(0).catch(() => undefined);
+        instrumentation.enable();
+      }
+    });
   });
 });

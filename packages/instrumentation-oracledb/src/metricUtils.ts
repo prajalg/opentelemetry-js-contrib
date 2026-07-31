@@ -39,7 +39,7 @@ let connectionsTimeouts!: Counter;
 // updated by adding deltas. Store the last recorded values for each pool to
 // calculate the correct delta on every pool event. On the next pool event, this
 // also reconciles any pool changes that were not recorded, such as changes made
-// while instrumentation was disabled, so metric values remain accurate.
+// while instrumentation was disabled, ensuring metric values remain accurate.
 const connectionsCounterState: Record<string, PoolConnectionsCounter> = {};
 
 export interface PoolConnectionsCounter {

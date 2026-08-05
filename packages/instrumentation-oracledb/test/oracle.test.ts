@@ -202,7 +202,7 @@ if (process.env.NODE_ORACLEDB_DRIVER_MODE === 'thick') {
   // variable NODE_ORACLEDB_CLIENT_LIB_DIR to the Oracle Client library path
   if (
     process.platform === 'win32' ||
-    (process.platform === 'darwin' && process.arch === 'x64')
+    (process.platform === 'darwin')
   ) {
     clientOpts = { libDir: process.env.NODE_ORACLEDB_CLIENT_LIB_DIR };
   }
@@ -246,7 +246,7 @@ function updateAttrSpanList(connection: oracledb.Connection) {
     connectSpanAttributes[ATTR_ORACLE_DB_DOMAIN] =
       extendedConnection.domainName;
   }
-  if (isOracleDB7Plus() && extendedConnection.dbUniqueName) {
+  if (oracledb.thin && isOracleDB7Plus() && extendedConnection.dbUniqueName) {
     connectSpanAttributes[ATTR_DB_NAMESPACE] =
       `${extendedConnection.dbUniqueName}`;
   }
@@ -578,7 +578,7 @@ describe('oracledb', () => {
     if (connection.serviceName) {
       connAttributes[ATTR_ORACLE_DB_SERVICE] = connection.serviceName;
     }
-    if (isOracleDB610Plus() && extendedConn.dbUniqueName) {
+    if (oracledb.thin && isOracleDB610Plus() && extendedConn.dbUniqueName) {
       connAttributes[ATTR_DB_NAMESPACE] = extendedConn.dbUniqueName;
     }
     poolAttributes = { ...connAttributes, ...POOL_ATTRIBUTES };

@@ -1,5 +1,6 @@
 /*
  * Copyright The OpenTelemetry Authors
+ * Copyright (c) 2026, Oracle and/or its affiliates.
  * SPDX-License-Identifier: Apache-2.0
  */
 import {
@@ -326,7 +327,13 @@ describe('oracledb-metrics', () => {
         if (errors.length) throw errors;
       }
 
-      it('1.1.1 Metrics should include poolMin numnber of connections upon pool warmup', async () => {
+      it('1.1.1 Metrics should include poolMin numnber of connections upon pool warmup', async function() {
+
+        // node-oracledb currently emits the pool expansion callback only in
+        // Thin mode
+        if(!oracledb.thin) {
+          this.skip();
+        }
         assert.ok(
           await utils.waitForCreatePool(pool, queueTimeout),
           `expected ${poolName} to warm up`
@@ -886,19 +893,29 @@ describe('oracledb-metrics', () => {
           enableStatistics: true,
           poolTimeout: 5,
         });
-        assert.ok(
-          await utils.waitForCreatePool(pool, queueTimeout),
-          `expected ${poolName} to warm up`
-        );
-        const metrics = await getMetrics();
-        checkPoolConnMetrics(metrics, pool);
+
+        // node-oracledb currently emits the pool expansion callback only in
+        // Thin mode
+        if(oracledb.thin) {
+          assert.ok(
+            await utils.waitForCreatePool(pool, queueTimeout),
+            `expected ${poolName} to warm up`
+          );
+          const metrics = await getMetrics();
+          checkPoolConnMetrics(metrics, pool);
+        }
 
         instrumentation.disable();
         conn = await pool.getConnection();
-        const updatedMetrics = await getMetrics();
 
-        // Metrics should only reflect the idle connection created during pool warmup.
-        checkPoolConnMetrics(updatedMetrics, pool, 1, 0, 0, 0);
+        if(oracledb.thin) {
+          const updatedMetrics = await getMetrics();
+          // Metrics should only reflect the idle connection created during pool warmup.
+          checkPoolConnMetrics(updatedMetrics, pool, pool.poolMin, 0, 0, 0);
+        } else {
+          const { resourceMetrics } = await metricReader.collect();
+          assert.strictEqual(resourceMetrics.scopeMetrics[0], undefined);
+        }
       } finally {
         if (conn) await conn.close().catch(() => undefined);
         if (pool) await pool.close(0).catch(() => undefined);
@@ -948,13 +965,17 @@ describe('oracledb-metrics', () => {
           enableStatistics: true,
           poolTimeout: 5,
         });
-        assert.ok(
-          await utils.waitForCreatePool(pool, queueTimeout),
-          `expected ${poolName} to warm up`
-        );
 
-        // Establish the initial reported state: one idle connection.
-        checkPoolConnMetrics(await getMetrics(), pool, 1, 0, 0, 0);
+        // node-oracledb currently emits the pool expansion callback only in
+        // Thin mode
+        if(oracledb.thin) {
+          assert.ok(
+            await utils.waitForCreatePool(pool, queueTimeout),
+            `expected ${poolName} to warm up`
+          );
+          // Establish the initial reported state: one idle connection.
+          checkPoolConnMetrics(await getMetrics(), pool, 1, 0, 0, 0);
+        }
 
         instrumentation.disable();
         disabledConnection = await pool.getConnection();

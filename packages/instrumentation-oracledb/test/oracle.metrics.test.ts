@@ -327,11 +327,10 @@ describe('oracledb-metrics', () => {
         if (errors.length) throw errors;
       }
 
-      it('1.1.1 Metrics should include poolMin numnber of connections upon pool warmup', async function() {
-
+      it('1.1.1 Metrics should include poolMin numnber of connections upon pool warmup', async function () {
         // node-oracledb currently emits the pool expansion callback only in
         // Thin mode
-        if(!oracledb.thin) {
+        if (!oracledb.thin) {
           this.skip();
         }
         assert.ok(
@@ -896,7 +895,7 @@ describe('oracledb-metrics', () => {
 
         // node-oracledb currently emits the pool expansion callback only in
         // Thin mode
-        if(oracledb.thin) {
+        if (oracledb.thin) {
           assert.ok(
             await utils.waitForCreatePool(pool, queueTimeout),
             `expected ${poolName} to warm up`
@@ -908,7 +907,7 @@ describe('oracledb-metrics', () => {
         instrumentation.disable();
         conn = await pool.getConnection();
 
-        if(oracledb.thin) {
+        if (oracledb.thin) {
           const updatedMetrics = await getMetrics();
           // Metrics should only reflect the idle connection created during pool warmup.
           checkPoolConnMetrics(updatedMetrics, pool, pool.poolMin, 0, 0, 0);
@@ -968,7 +967,7 @@ describe('oracledb-metrics', () => {
 
         // node-oracledb currently emits the pool expansion callback only in
         // Thin mode
-        if(oracledb.thin) {
+        if (oracledb.thin) {
           assert.ok(
             await utils.waitForCreatePool(pool, queueTimeout),
             `expected ${poolName} to warm up`

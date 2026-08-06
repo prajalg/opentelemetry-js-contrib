@@ -66,6 +66,9 @@ function getTraceHandlerBaseClass(
   }
 }
 
+// Parses the database operation name used for metrics attributes.
+// PLSQL blocks are reported as `PLSQL` or `BATCH PLSQL`; other operations are
+// prepended with `BATCH` when executed through `executeMany()`.
 function parseMetricOperationName(
   statement: string | undefined,
   isBatch: boolean

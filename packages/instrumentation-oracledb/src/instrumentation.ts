@@ -22,7 +22,7 @@ export class OracleInstrumentation extends InstrumentationBase {
     super(PACKAGE_NAME, PACKAGE_VERSION, config);
   }
 
-  protected override _updateMetricInstruments(): void {
+  override _updateMetricInstruments(): void {
     setMetricInstruments(this.meter);
   }
 

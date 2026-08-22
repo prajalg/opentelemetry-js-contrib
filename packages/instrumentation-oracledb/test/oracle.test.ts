@@ -977,8 +977,8 @@ describe('oracledb', () => {
       context.with(trace.setSpan(context.active(), span), () => {
         oracledb.getConnection(CONFIG, (...args) => {
           const [err, conn] = args;
-          connection = conn!;
           assert.strictEqual(err, null);
+          connection = conn;
           verifySpans(span, connAttrList, spanNamesList);
 
           // Verify spans inside callback are child of application span

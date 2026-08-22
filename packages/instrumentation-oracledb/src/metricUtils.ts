@@ -19,7 +19,7 @@ import {
   hrTimeToMilliseconds,
 } from '@opentelemetry/core';
 import { METRIC_DB_CLIENT_OPERATION_DURATION } from '@opentelemetry/semantic-conventions';
-import * as oracleDBTypes from 'oracledb';
+import type * as oracleDBTypes from 'oracledb';
 import {
   ATTR_DB_CLIENT_CONNECTION_POOL_NAME,
   ATTR_DB_CLIENT_CONNECTION_STATE,
@@ -34,13 +34,7 @@ let operationDuration!: Histogram;
 let connectionsCount!: UpDownCounter;
 let connectionPendingRequests!: UpDownCounter;
 let connectionsTimeouts!: Counter;
-
-// Pool properties provide absolute values, but synchronous counters can only be
-// updated by adding deltas. Store the last recorded values for each pool to
-// calculate the correct delta on every pool event. On the next pool event, this
-// also reconciles any pool changes that were not recorded, such as changes made
-// while instrumentation was disabled, ensuring metric values remain accurate.
-const connectionsCounterState: Record<string, PoolConnectionsCounter> = {};
+let poolStatusOpen!: number;
 
 export interface PoolConnectionsCounter {
   idle: number;
@@ -48,6 +42,19 @@ export interface PoolConnectionsCounter {
   used: number;
   timeouts: number;
 }
+
+// Pool properties provide absolute values, but synchronous counters can only be
+// updated by adding deltas. Store the last recorded values for each pool to
+// calculate the correct delta on every pool event. On the next pool event, this
+// also reconciles any pool changes that were not recorded, such as changes made
+// while instrumentation was disabled, ensuring metric values remain accurate.
+// WeakMap keyed by Pool instance prevents memory leaks when pools are
+// dropped without an explicit close and state collisions between pools that
+// share aliases or connect strings.
+let connectionsCounterState = new WeakMap<
+  oracleDBTypes.Pool,
+  PoolConnectionsCounter
+>();
 
 const EMPTY_COUNTER_STATE: PoolConnectionsCounter = {
   idle: 0,
@@ -61,7 +68,7 @@ function createEmptyCounterState(): PoolConnectionsCounter {
 }
 
 function getCurrentPoolState(pool: oracleDBTypes.Pool): PoolConnectionsCounter {
-  if (pool.status !== oracleDBTypes.POOL_STATUS_OPEN) {
+  if (pool.status !== poolStatusOpen) {
     return createEmptyCounterState();
   }
 
@@ -83,6 +90,8 @@ export function getPoolName(
 }
 
 export function setMetricInstruments(meter: Meter) {
+  connectionsCounterState = new WeakMap();
+
   connectionsCount = meter.createUpDownCounter(
     METRIC_DB_CLIENT_CONNECTION_COUNT,
     {
@@ -123,18 +132,18 @@ export function setMetricInstruments(meter: Meter) {
       },
     }
   );
+}
 
-  for (const poolName of Object.keys(connectionsCounterState)) {
-    connectionsCounterState[poolName] = createEmptyCounterState();
-  }
+export function setPoolStatusOpen(status: number): void {
+  poolStatusOpen = status;
 }
 
 export function updateCounter(pool: oracleDBTypes.Pool) {
   if (!pool) return;
 
-  const poolName = getPoolName(pool);
-  const prev = connectionsCounterState[poolName] ?? createEmptyCounterState();
+  const prev = connectionsCounterState.get(pool) ?? createEmptyCounterState();
   const curr = getCurrentPoolState(pool);
+  const poolName = getPoolName(pool);
 
   const deltaUsed = curr.used - prev.used;
   const deltaIdle = curr.idle - prev.idle;
@@ -156,10 +165,10 @@ export function updateCounter(pool: oracleDBTypes.Pool) {
   connectionPendingRequests.add(deltaPending, poolAttr);
   connectionsTimeouts.add(deltaTimeouts, poolAttr);
 
-  if (pool.status === oracleDBTypes.POOL_STATUS_OPEN) {
-    connectionsCounterState[poolName] = curr;
+  if (pool.status === poolStatusOpen) {
+    connectionsCounterState.set(pool, curr);
   } else {
-    delete connectionsCounterState[poolName];
+    connectionsCounterState.delete(pool);
   }
 }
 
